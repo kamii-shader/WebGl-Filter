@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Submit and Show Image in WebGL</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        canvas {
+            border: 1px solid #ccc;
+            display: block;
+            margin: 20px auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Upload and Transform Your Image</h1>
+    <form id="imageForm">
+        <input type="file" id="imageInput" accept="image/*">
+        <br><br>
+        <select id="imageDropdown">
+            <option value="0">None</option>
+            <option value="1">Grayscale</option>
+            <option value="2">Blur</option>
+        </select>
+        <br><br>
+        <button type="submit">Submit</button>
+    </form>
+    <canvas id="webglCanvas" width="500" height="500"></canvas>
+
+    <script>
+        const imageForm = document.getElementById('imageForm');
+        const imageInput = document.getElementById('imageInput');
+        const imageDropdown = document.getElementById('imageDropdown');
+        const canvas = document.getElementById('webglCanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) {
+            alert('Your browser does not support WebGL');
+            throw new Error('WebGL not supported');
+        }
+
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            attribute vec2 a_texCoord;
+            varying vec2 v_texCoord;
+
+            void main() {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                v_texCoord = a_texCoord;
+            }
+        `;
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec2 v_texCoord;
+            uniform sampler2D u_image;
+            uniform int u_filter;
+            const int radius = 10;
+
+            void main() {
+                if(u_filter == 1){
+                    //Filter Grayscale
+                    vec4 color = texture2D(u_image, v_texCoord);
+                    vec3 grayscale = vec3( dot( vec3(0.3, 0.59, 0.11), color.rgb));
+                    gl_FragColor = vec4(grayscale.rgb, 1.0);
+                }else if(u_filter == 2){
+                    //Filter Blur
+                    float pi = 3.1415926;
+                    float sigma = 5.;
+                    
+                    vec4 gaussSum = vec4(0.);
+                    
+                    for(int x = -radius; x <= radius; x++){
+                        for(int y = -radius; y <= radius; y++){
+                            vec2 newUV = (v_texCoord + vec2(x,y) / 500.0);
+                            vec4 newTexCol = texture2D(u_image, newUV);
+                            gaussSum += texture2D(u_image, newUV) * (exp(-(pow(float(x), 2.) + pow(float(y), 2.)) / (2. * pow(sigma, 2.))) / (2. * pi * pow(sigma, 2.)));
+                        }   
+                    }
+                    gl_FragColor = vec4(gaussSum.rgb, 1.0);
+                }else{
+                    //Tanpa Filter
+                    gl_FragColor = texture2D(u_image, v_texCoord);
+                }
+            }
+        `;
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+        const program = createProgram(gl, vertexShader, fragmentShader);
+        gl.useProgram(program);
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1,  1, -1,  -1,  1,
+             1, -1,  1,  1,  -1,  1
+        ]), gl.STATIC_DRAW);
+
+        const texCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            0, 1,  1, 1,  0, 0,
+            1, 1,  1, 0,  0, 0
+        ]), gl.STATIC_DRAW);
+
+        const positionLocation = gl.getAttribLocation(program, 'a_position');
+        gl.enableVertexAttribArray(positionLocation);
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+        const texCoordLocation = gl.getAttribLocation(program, 'a_texCoord');
+        gl.enableVertexAttribArray(texCoordLocation);
+        gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+        gl.vertexAttribPointer(texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        const imageLocation = gl.getUniformLocation(program, 'u_image');
+        const filterType = gl.getUniformLocation(program, "u_filter");
+
+        function loadImage(url) {
+            const img = new Image();
+            img.onload = function() {
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                gl.uniform1i(imageLocation, 0);
+
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            };
+            img.src = url;
+        }
+
+        imageForm.addEventListener('submit', function(event) {
+            event.preventDefault();
+
+            const selectElement = document.getElementById("imageDropdown");
+
+            const selectedFilter = parseInt(selectElement.value);
+
+            if (imageInput.files.length > 0) {
+                const file = imageInput.files[0];
+                const img = new Image();
+                img.onload = function() {
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                    gl.uniform1i(imageLocation, 0);
+                    gl.uniform1i(filterType, selectedFilter);
+
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+                };
+                img.src = URL.createObjectURL(file);
+            } else {
+                loadImage(imageDropdown.value);
+            }
+        });
+
+        loadImage(imageDropdown.value);
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                throw new Error('Shader compile failed');
+            }
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                throw new Error('Program link failed');
+            }
+            return program;
+        }
+    </script>
+</body>
+</html>
